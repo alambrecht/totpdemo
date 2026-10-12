@@ -1,0 +1,176 @@
+<!doctype html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>TOTP Demo</title>
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.2/css/all.min.css">
+    <style>
+        .code-display { font-family: monospace; font-size: 2.5rem; letter-spacing: .4rem; }
+        .secret { font-family: monospace; word-break: break-all; }
+        #qr { max-width: 240px; }
+        #codeInput { font-family: monospace; font-size: 1.5rem; letter-spacing: .3rem; text-align: center; }
+    </style>
+</head>
+<body class="bg-body-tertiary">
+<nav class="navbar bg-dark" data-bs-theme="dark">
+    <div class="container">
+        <span class="navbar-brand"><i class="fa-solid fa-shield-halved me-2"></i>TOTP Demo</span>
+        <span class="navbar-text small">RFC 6238 &middot; SHA1 &middot; 6 digits &middot; 30s</span>
+    </div>
+</nav>
+
+<main class="container py-4" style="max-width: 960px">
+
+    <!-- Step 1: setup -->
+    <div class="card shadow-sm mb-4">
+        <div class="card-header fw-semibold"><span class="badge text-bg-primary me-2">1</span>Create a secret</div>
+        <div class="card-body">
+            <form id="setupForm" class="row g-2">
+                <div class="col-sm">
+                    <div class="input-group">
+                        <span class="input-group-text"><i class="fa-solid fa-user"></i></span>
+                        <input id="account" class="form-control" placeholder="demo@example.com" aria-label="Account name">
+                    </div>
+                </div>
+                <div class="col-sm-auto">
+                    <button class="btn btn-primary w-100"><i class="fa-solid fa-key me-1"></i>Generate</button>
+                </div>
+            </form>
+        </div>
+    </div>
+
+    <div id="afterSetup" class="d-none">
+        <div class="row g-4 mb-4">
+            <!-- Step 2: scan -->
+            <div class="col-md-6">
+                <div class="card shadow-sm h-100">
+                    <div class="card-header fw-semibold"><span class="badge text-bg-primary me-2">2</span>Scan with an authenticator app</div>
+                    <div class="card-body text-center">
+                        <img id="qr" class="img-fluid border rounded mb-3" alt="QR code">
+                        <p class="small text-body-secondary mb-1">Can't scan? Enter this key manually:</p>
+                        <p class="secret fw-semibold mb-2" id="secret"></p>
+                        <button id="copySecret" class="btn btn-sm btn-outline-secondary"><i class="fa-regular fa-copy me-1"></i>Copy key</button>
+                        <details class="mt-3 text-start">
+                            <summary class="small text-body-secondary">otpauth URI</summary>
+                            <code class="small secret" id="uri"></code>
+                        </details>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Server view -->
+            <div class="col-md-6">
+                <div class="card shadow-sm h-100">
+                    <div class="card-header fw-semibold"><i class="fa-solid fa-server me-2"></i>What the server calculates</div>
+                    <div class="card-body text-center d-flex flex-column justify-content-center">
+                        <p class="small text-body-secondary">This should match the code on your phone.</p>
+                        <div class="code-display mb-2" id="serverCode">------</div>
+                        <div class="progress mb-2" style="height: 8px" role="progressbar" aria-label="Time remaining">
+                            <div id="timer" class="progress-bar" style="width: 100%"></div>
+                        </div>
+                        <p class="small mb-0"><i class="fa-regular fa-clock me-1"></i>New code in <span id="seconds">30</span>s</p>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Step 3: verify -->
+        <div class="card shadow-sm mb-4">
+            <div class="card-header fw-semibold"><span class="badge text-bg-primary me-2">3</span>Verify a code</div>
+            <div class="card-body">
+                <form id="verifyForm" class="row g-2 justify-content-center">
+                    <div class="col-sm-5">
+                        <input id="codeInput" class="form-control" inputmode="numeric" autocomplete="one-time-code"
+                               maxlength="6" placeholder="123456" aria-label="6 digit code">
+                    </div>
+                    <div class="col-sm-auto">
+                        <button class="btn btn-success w-100 h-100"><i class="fa-solid fa-check me-1"></i>Verify</button>
+                    </div>
+                </form>
+                <div id="result" class="mt-3"></div>
+            </div>
+        </div>
+    </div>
+
+    <div class="card shadow-sm">
+        <div class="card-header fw-semibold"><i class="fa-solid fa-circle-info me-2"></i>How it works</div>
+        <div class="card-body small">
+            <ol class="mb-0">
+                <li>The server creates a random 160-bit <strong>shared secret</strong> and shows it as a QR code (Base32 encoded).</li>
+                <li>Your phone and the server both compute <code>counter = floor(unix_time / 30)</code>.</li>
+                <li>Each side calculates <code>HMAC-SHA1(secret, counter)</code> and truncates it to 6 digits.</li>
+                <li>Same secret + same time = same code. No network connection between phone and server is needed.</li>
+                <li>The server accepts the previous and next 30s window too, to tolerate small clock drift.</li>
+            </ol>
+        </div>
+    </div>
+</main>
+
+<script>
+    let secret = null;
+    let lastCounter = null;
+
+    const $ = id => document.getElementById(id);
+
+    $('setupForm').addEventListener('submit', async e => {
+        e.preventDefault();
+        const res = await fetch('/api/setup', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ account: $('account').value })
+        });
+        const data = await res.json();
+        secret = data.secret;
+        $('qr').src = data.qrCode;
+        $('secret').textContent = data.secret.match(/.{1,4}/g).join(' ');
+        $('uri').textContent = data.uri;
+        $('result').innerHTML = '';
+        $('afterSetup').classList.remove('d-none');
+        lastCounter = null;
+        refreshCode();
+    });
+
+    $('copySecret').addEventListener('click', async () => {
+        await navigator.clipboard?.writeText(secret);
+        $('copySecret').innerHTML = '<i class="fa-solid fa-check me-1"></i>Copied';
+        setTimeout(() => $('copySecret').innerHTML = '<i class="fa-regular fa-copy me-1"></i>Copy key', 1500);
+    });
+
+    async function refreshCode() {
+        const res = await fetch('/api/code?secret=' + encodeURIComponent(secret));
+        const data = await res.json();
+        $('serverCode').textContent = data.code.slice(0, 3) + ' ' + data.code.slice(3);
+    }
+
+    // Tick every second: update the countdown locally, fetch a new code when the window rolls over.
+    setInterval(() => {
+        if (!secret) return;
+        const now = Date.now() / 1000;
+        const counter = Math.floor(now / 30);
+        const remaining = Math.ceil(30 - (now % 30));
+        $('seconds').textContent = remaining;
+        const bar = $('timer');
+        bar.style.width = (remaining / 30 * 100) + '%';
+        bar.className = 'progress-bar ' + (remaining <= 5 ? 'bg-danger' : remaining <= 10 ? 'bg-warning' : '');
+        if (counter !== lastCounter) { lastCounter = counter; refreshCode(); }
+    }, 1000);
+
+    $('verifyForm').addEventListener('submit', async e => {
+        e.preventDefault();
+        const res = await fetch('/api/verify', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ secret, code: $('codeInput').value })
+        });
+        const { valid } = await res.json();
+        $('result').innerHTML = valid
+            ? '<div class="alert alert-success mb-0"><i class="fa-solid fa-circle-check me-2"></i>Code is valid &mdash; you\'re in!</div>'
+            : '<div class="alert alert-danger mb-0"><i class="fa-solid fa-circle-xmark me-2"></i>Invalid or expired code.</div>';
+        $('codeInput').value = '';
+        $('codeInput').focus();
+    });
+</script>
+</body>
+</html>
